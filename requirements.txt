@@ -1,0 +1,9 @@
+Flask==3.0.2
+psycopg2==2.9.9
+waitress==3.0.0
+shapely==2.0.2
+pyarrow==15.0.0
+
+# used to init the db 
+pandas==2.2.0
+numpy==1.26.3
