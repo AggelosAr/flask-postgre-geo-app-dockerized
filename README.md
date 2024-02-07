@@ -18,7 +18,7 @@ Make the ocean bounding boxes better.
 ## API Endpoints
 The endpoints generally incorporate validations.
 
-### PUT Endpoint: /get_ship_data
+### GET Endpoint: /get_ship_data
 - **Method:** GET
 - **Input Parameters:**
     - `mmsi` (Vessel Identifier)
@@ -29,7 +29,7 @@ The endpoints generally incorporate validations.
 - **Returns:**
     ```json
     {
-       "Position updated for MMSI: 1, Lon: -39.780807, Lat: 35.291355, Tstamp: 2023-09-30 23:10:00"
+        "Atlantic": 549.8152777777777
     }
     ```
 
@@ -45,6 +45,6 @@ The endpoints generally incorporate validations.
 - **Returns:**
     ```json
     {
-        "Atlantic": 549.8152777777777
+       "Position updated for MMSI: 1, Lon: -39.780807, Lat: 35.291355, Tstamp: 2023-09-30 23:10:00"
     }
     ```
