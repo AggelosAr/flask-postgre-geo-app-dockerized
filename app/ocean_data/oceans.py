@@ -155,12 +155,7 @@ OCEANS = {
               -77.68320722522344,
               4.243389565023378
             ]
-    ]
-     
+    ]  
 }
 
-
 OCEAN_POLYGONS = {ocean: Polygon(np.round(np.array(vertices), decimals=6)) for ocean, vertices in OCEANS.items()}
-
-
-

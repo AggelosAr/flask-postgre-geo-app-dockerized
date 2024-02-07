@@ -6,41 +6,38 @@ import psycopg2
 import os, sys
 
 PATH = os.path.join(os.getcwd(), "inits", "csvs")
+IS_DEPOLYED: bool =  bool(os.environ.get('IS_DEPLOYED', '').lower() == 'true')
 
-
+#type return here TODO
 def connect():
     connect_params = {
-        "host"      : "db",#localhost for local dev
+        "host"      : os.environ.get('HOST_MACHINE'),
         "database"  : os.environ.get('POSTGRESQL_DB'),
-        "user"      : os.environ.get('POSTGRESQL_USERNAME'),
-        "password"  : os.environ.get('POSTGRESQL_PASSWORD'),
+        "user"      : os.environ.get('POSTGRES_USERNAME'),
+        "password"  : os.environ.get('POSTGRES_PASSWORD'),
         "port"      : 5432
     }
 
     conn = None
     try:
-        print("Connecting to the PostgreSQL database...")
         conn = psycopg2.connect(**connect_params)
     except (Exception, psycopg2.DatabaseError) as error:
         print(error)
         sys.exit(1) 
-    print("Connection successful")
     return conn
 
 
 
-    
-def insert_data(conn, csv_file):
+# Each table will be named mmsi1, mmsi2, mmsi3 etc.
+# For each vessel we will have a seperate table
+def insert_data(conn, file_name: str) -> None:
 
+    table = file_name.split(".")[0]
 
-    table = csv_file.split(".")[0]
-
-    csv_file_path = os.path.join(PATH, csv_file)
+    csv_file_path = os.path.join(PATH, file_name)
     df = pd.read_csv(csv_file_path, index_col=0)
    
     df.drop(["mmsi", "position", "speed"], axis=1, inplace=True)
-    
-    #df = df[0:15]
 
     tuples = [tuple(x) for x in df.to_numpy()]
     cols = ",".join(list(df.columns))
@@ -67,28 +64,21 @@ def insert_data(conn, csv_file):
         """)
       
         cursor.executemany(query, tuples)
-
-
         conn.commit()
     except (Exception, psycopg2.DatabaseError) as error:
         print("Error: %s" % error)
         conn.rollback()
         cursor.close()
-        return 1
+        return
 
-    
     cursor.close()
+    
     print(f"Created table: {table} - Rows added: {len(df)}")
   
 
-
-
-def initDb():
+def initDb() -> None:
     conn = connect()
-    for csv_file in os.listdir(PATH):
-        insert_data(conn, csv_file)
+    for csv_file_name in os.listdir(PATH):
+        insert_data(conn, csv_file_name)
     conn.close()
     
-
-    
-

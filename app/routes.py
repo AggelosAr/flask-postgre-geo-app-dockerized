@@ -1,27 +1,28 @@
 from app import app
-from flask import request, jsonify
+from flask import request, jsonify, Response
 from datetime import datetime, date
 import psycopg2
 from collections import defaultdict
 from shapely.geometry import Point
- 
-#import matplotlib.pyplot as plt-> USED FOR PLOTS
-#import cartopy.crs as ccrs-> USED FOR PLOTS
-
 import os
-
 from app.ocean_data.oceans import OCEAN_POLYGONS
 
+IS_DEPOLYED: bool =  bool(os.environ.get('IS_DEPLOYED', '').lower() == 'true')
 
 
-# Time spent (in hours) in each ocean
+# TODO handle exceptions
+
+    
+type Vessels = list[tuple[float | None, float | None]]
 type OceanTimes = dict[str, float]
 # this should be a list not a tuple TODO !!
-type OceanRanges =  dict[str, list[tuple[int, int]]]
+type OceanTimeRanges =  dict[str, list[tuple[int, int]]]
+
+
 
 
 @app.route('/put_ship_data', methods=['PUT'])
-def put_ship_data():
+def put_ship_data() -> Response:
     try:
 
         if len(request.args) != 4:
@@ -36,8 +37,6 @@ def put_ship_data():
         lat = float(request.args.get('lat'))
         tstamp = datetime.strptime(request.args.get('tstamp'), "%Y-%m-%d %H:%M:%S")
 
-        
-        
         resp = f"Position updated for MMSI: {mmsi}, Lon: {lon}, Lat: {lat}, Tstamp: {tstamp}"
 
         insert_data(mmsi, lon, lat, tstamp)
@@ -49,10 +48,8 @@ def put_ship_data():
    
 
 
-
-# Route for handling GET requests
 @app.route("/get_ship_data", methods=['GET'])
-def get_ship_data():
+def get_ship_data() -> Response:
     try:
 
         if len(request.args) != 3:
@@ -76,10 +73,8 @@ def get_ship_data():
 
 
 
-
-def insert_data(mmsi: int, lon: float, lat: float, tstamp: date):
-    # each table will be names mmsi1, mmsi2, mmsi3 etc.
-    # For each vessel we will have a seperate table
+def insert_data(mmsi: int, lon: float, lat: float, tstamp: date) -> None:
+    
     conn = get_db_connection()
     cur = conn.cursor()
 
@@ -95,23 +90,18 @@ def insert_data(mmsi: int, lon: float, lat: float, tstamp: date):
                 ({lon}, {lat}, '{tstamp}')
             """
     cur.execute(query)
-
     conn.commit()
     cur.close()
     conn.close()
-    print("Data inserted successfully")
-
-   
 
 
+# We have the trajectory of the vessel
+# do a linear serach and for each point 
+# see if it inside the bounding box of the ocean
 def get_oceans(mmsi: int, start_date: date, end_date: date) -> OceanTimes:
 
     conn = get_db_connection()
     cur = conn.cursor()
-
-    # here we have the trajectory of the vessel
-    # do a linear serach and for each point 
-    # 1 see if it inside the bounding box of the ocean
 
     table_name = f'mmsi_{mmsi}'
 
@@ -126,94 +116,69 @@ def get_oceans(mmsi: int, start_date: date, end_date: date) -> OceanTimes:
             """
     cur.execute(query)
 
-
     # this is a map of ranges 
     # handle case where it left the ocean and come back, hence the list of lists
     # e.g. Atlantic -> [ [ENTRY_TIME, LAST_TIME], [ENTRY_TIME, LAST_TIME], ... ]
-    ocean_times = {
+    ocean_time_ranges: OceanTimeRanges = {
         "Indian" : [[None, None]],
         "Pacific" : [[None, None]],
         "Atlantic" : [[None, None]],
     }
+    prev_ocean = None
+    vessels = []
     
-
-    last_ocean = None
-
-    #testing can be turned on with a flag  -> USED FOR PLOTS
-    #vessel_points = []
-
     for row in cur.fetchall():
+        prev_ocean = update_ocean_ranges(prev_ocean, row, vessels, ocean_time_ranges)
         
-        lon = row[1]
-        lat = row[2] 
-        ts = row[3]
-
-        cur_ocean = find_ocean(lon, lat)
-
-        #testing -> USED FOR PLOTS
-        #vessel_points.append((lon, lat))
-
-
-        # 2 cases
-        # case 1 ->  we found ocean 
-        if cur_ocean:
-            
-            # Retrieve the last visit
-            last_visit = ocean_times[cur_ocean][-1]
-            # if ENTRY_TIME doesn't exist create one 
-            if last_visit[0] is None:
-                last_visit[0] = ts
-            # Else update the LAST_TIME 
-            else:
-                last_visit[1] = ts
-
-
-        # case 2 -> we did not find any oceans
-        # e.g. it is not in any of the 3 oceans we want
-        # ! ignore it !
-        # Although there is a case it may reenter so update the 
-        # last ocean by appendning a [None, None]
-        # Since we retrieve the last_visit by looking at the end of the list. 
-        else:
-
-            # if you found one ocean last time and now you didn't find any. 
-            # you are out of the box so add a new interval to the last entry 
-            if last_ocean:
-                ocean_times[last_ocean].append([None, None])
-             
-        last_ocean = cur_ocean
-        
-
     cur.close()
     conn.close()
 
-
+    #if not IS_DEPOLYED:
+    #    make_png_from_points(table_name, vessels)
     
-    #testing -> USED FOR PLOTS
-    """
-    fig, ax = plt.subplots(subplot_kw={'projection': ccrs.Robinson()})
-    ax.set_global()
+    return collapse_ranges(ocean_time_ranges)
 
+
+def find_ocean(lon: float, lat: float) -> str | None:
     for ocean, polygon in OCEAN_POLYGONS.items():
-        ax.add_geometries([polygon], ccrs.PlateCarree(), edgecolor='black', facecolor='none', label=ocean)
-
-    lons, lats = zip(*vessel_points)
-    ax.scatter(lons, lats, c='red', marker='o', transform=ccrs.PlateCarree(), label='Vessel Points')
-
-    ax.coastlines()
-    ax.gridlines()
-
-    plt.savefig(f"{table_name}.png", dpi=300)  # Adjust dpi as needed
-    #plt.legend()
-    #plt.show()
-    """
-    return collapse_ranges(ocean_times)
+        if polygon.contains(Point(lon, lat)):
+            return ocean
 
 
+def update_ocean_ranges(prev_ocean: str | None, 
+                        row:  tuple[any, ...], 
+                        vessels: Vessels, 
+                        ocean_time_ranges: OceanTimeRanges) -> str | None:
+    
+    lon, lat, ts = row[1], row[2], row[3]
+    ocean = find_ocean(lon, lat)
+    vessels.append((lon, lat))
 
-def collapse_ranges(ocean_times: OceanRanges) -> OceanTimes:
-    single_ocean_times = defaultdict(int)
-    for ocean, time_ranges in ocean_times.items():
+    # case 1 ->  we found ocean 
+    # if ENTRY_TIME doesn't exist create one 
+    # Else update the LAST_TIME
+    if ocean:
+        
+        last_visit = ocean_time_ranges[ocean][-1]
+        if last_visit[0] is None:
+            last_visit[0] = ts
+        else:
+            last_visit[1] = ts
+
+    # case 2 -> we did not find any oceans
+    # There is a case it may reenter so update the last ocean 
+    # by appendning a [None, None]
+    # if you found one ocean last time and now you didn't find any. 
+    # you are out of the box so add a new interval to the last entry 
+    elif prev_ocean:
+        ocean_time_ranges[prev_ocean].append([None, None])
+            
+    return ocean
+        
+
+def collapse_ranges(ranges: OceanTimeRanges) -> OceanTimes:
+    collapsed_ranges: OceanTimes = defaultdict(int)
+    for ocean, time_ranges in ranges.items():
         for start_time, end_time in time_ranges:
             if start_time is None and  end_time is None:
                 continue
@@ -222,31 +187,21 @@ def collapse_ranges(ocean_times: OceanRanges) -> OceanTimes:
                 # this means the vessel sunk
                 # only end time must be none
                 continue
-            single_ocean_times[ocean] += (end_time - start_time).total_seconds() / 3600
+
+            time_in_hours = (end_time - start_time).total_seconds() / 3600
+            collapsed_ranges[ocean] += time_in_hours
     
-    return single_ocean_times
+    return collapsed_ranges
     
 
 
-
-
-
-def find_ocean(lon: float, lat: float):
-    point = Point(lon, lat)
-    for ocean, polygon in OCEAN_POLYGONS.items():
-        
-        if polygon.contains(point):
-            return ocean
-
-   
 def get_db_connection():
-    conn = psycopg2.connect(host='db', #localhost for local dev
+    conn = psycopg2.connect(host=os.environ.get('HOST_MACHINE'),
                             database=os.environ['POSTGRESQL_DB'],
-                            user=os.environ['POSTGRESQL_USERNAME'],
-                            password=os.environ['POSTGRESQL_PASSWORD'],
+                            user=os.environ['POSTGRES_USERNAME'],
+                            password=os.environ['POSTGRES_PASSWORD'],
                             port=5432)
     return conn
-
 
 
 
@@ -260,3 +215,25 @@ def table_exists(table_name: str, cur) -> bool:
             """
     cur.execute(query)
     return cur.fetchone()[0]
+
+"""
+def make_png_from_points(filename: str, points: list) -> None:
+    import matplotlib.pyplot as plt
+    import cartopy.crs as ccrs
+    
+    fig, ax = plt.subplots(subplot_kw={'projection': ccrs.Robinson()})
+    ax.set_global()
+
+    for ocean, polygon in OCEAN_POLYGONS.items():
+        ax.add_geometries([polygon], ccrs.PlateCarree(), edgecolor='black', facecolor='none', label=ocean)
+
+    lons, lats = zip(*points)
+    ax.scatter(lons, lats, c='red', marker='o', transform=ccrs.PlateCarree(), label='Vessel Points')
+
+    ax.coastlines()
+    ax.gridlines()
+
+    plt.savefig(f"{filename}.png", dpi=300) 
+    #plt.legend()
+    #plt.show()
+"""
